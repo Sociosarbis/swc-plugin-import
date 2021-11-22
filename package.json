@@ -1,0 +1,9 @@
+{
+  "name": "swc-plugin-import",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "dependencies": {
+    "@swc/core": "^1.2.0"
+  }
+}
