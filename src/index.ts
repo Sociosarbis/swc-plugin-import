@@ -1,4 +1,4 @@
-import { ImportDeclaration, Module } from "@swc/core"
+import { Identifier, ImportDeclaration, KeyValuePatternProperty, Module, Script, Statement, VariableDeclaration } from "@swc/core"
 import Visitor from "@swc/core/Visitor"
 
 
@@ -40,6 +40,86 @@ export default class UILibImporter extends Visitor {
         return m
     }
 
+    visitStatements(stmts: Statement[]) {
+        stmts = super.visitStatements(stmts)
+        for (let i = stmts.length - 1; i >= 0; i++) {
+            const newStatements = this._visitStatement(stmts[i])
+            if (!(newStatements.length === 1 && newStatements[0] === stmts[i])) {
+                stmts.splice(i, 1, ...newStatements)
+            }
+        }
+        return stmts
+    }
+
+    _visitStatement(s: Statement) {
+        const ret: Statement[] = [s]
+        if (s.type === 'VariableDeclaration') {
+            for (let i = s.declarations.length - 1; i >= 0; i--) {
+                const declaration = s.declarations[i]
+                if (declaration.init) {
+                    if (declaration.init.type === 'CallExpression' &&
+                        declaration.init.callee.type === 'Identifier' &&
+                        declaration.init.callee.value === 'require' &&
+                        declaration.init.arguments.length &&
+                        declaration.init.arguments[0].expression.type === 'StringLiteral' &&
+                        declaration.init.arguments[0].expression.value === this.options.libraryName &&
+                        declaration.id.type === 'ObjectPattern'
+                    ) {
+                        const properties = declaration.id.properties
+                        for (let i = properties.length - 1; i >= 0; i++) {
+                            if (properties[i].type === 'KeyValuePatternProperty') {
+                                const key = (properties[i] as KeyValuePatternProperty).key as Identifier
+                                ret.push({
+                                    ...s,
+                                    declarations: [{
+                                        ...declaration,
+                                        id: (properties[i] as KeyValuePatternProperty).value,
+                                        init: {
+                                            ...declaration.init,
+                                            arguments: [{
+                                                expression: {
+                                                    ...declaration.init.arguments[0].expression,
+                                                    value: this.generateComponentPath(key.value)
+                                                }
+                                            }]
+                                        }
+                                    }]
+                                })
+                                if (this.options.style || this.options.styleLibraryDirectory) {
+                                    const stylePath = this.generateStyleSource(key.value)
+                                    if (stylePath) {
+                                        ret.push({
+                                            type: 'ExpressionStatement',
+                                            span: declaration.span,
+                                            expression: {
+                                                ...declaration.init,
+                                                arguments: [{
+                                                    expression: {
+                                                        ...declaration.init.arguments[0].expression,
+                                                        value: stylePath
+                                                    }
+                                                }]
+                                            }
+                                        })
+                                    }
+                                }
+                                properties.splice(i, 1)
+                            }
+                        }
+                        if (!properties.length) {
+                            s.declarations.splice(i, 1)
+                        }
+                    }
+                }
+            }
+            if (!s.declarations.length) {
+                ret.unshift()
+            }
+
+        }
+        return ret
+    }
+
     visitImportDeclaration(n: ImportDeclaration) {
         if (n.source.value === this.options.libraryName) {
             for (let i = n.specifiers.length - 1; i >= 0; i--) {
@@ -47,18 +127,14 @@ export default class UILibImporter extends Visitor {
                 if (specifier.type === 'ImportSpecifier' && specifier.imported?.value) {
                     const componentPath = this.generateComponentPath(specifier.imported.value)
                     this.importItems.push({
-                        type: 'ImportDeclaration',
+                        ...n,
                         specifiers: [{
+                            ...specifier,
                             type: 'ImportDefaultSpecifier',
-                            local: specifier.local,
-                            span: specifier.span
                         }],
-                        span: specifier.span,
                         source: {
-                            type: 'StringLiteral',
-                            span: n.source.span,
-                            value: componentPath,
-                            has_escape: n.source.has_escape
+                            ...n.source,
+                            value: componentPath
                         }
                     })
                     if (this.options.style || this.options.styleLibraryDirectory) {
@@ -69,10 +145,8 @@ export default class UILibImporter extends Visitor {
                                 specifiers: [],
                                 span: specifier.span,
                                 source: {
-                                    type: 'StringLiteral',
-                                    span: n.source.span,
-                                    value: stylePath,
-                                    has_escape: n.source.has_escape
+                                    ...n.source,
+                                    value: stylePath
                                 }
                             })
                         }
@@ -102,7 +176,7 @@ export default class UILibImporter extends Visitor {
         }
         if (this.options.styleLibraryDirectory) {
             return `${this.options.libraryName}/${this.options.styleLibraryDirectory}/${this.generateComponentName(source)}`
-        } else if (this.options.style){
+        } else if (this.options.style) {
             const s = this.options.style ? 'style' : 'style/css'
             return `${this.generateComponentPath(source)}/${s}`
         }
