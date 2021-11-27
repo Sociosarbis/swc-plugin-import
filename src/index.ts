@@ -12,6 +12,7 @@ type Options = {
     styleLibraryDirectory?: string
     camel2DashComponentName?: boolean
     customName?: CustomName | string
+    transformToDefaultImport?: boolean
 }
 
 const isEmptyImportDecl = (importDecl: ImportDeclaration) => !importDecl.specifiers.length
@@ -73,7 +74,14 @@ export default class UILibImporter extends Visitor {
                                     ...s,
                                     declarations: [{
                                         ...declaration,
-                                        id: (properties[i] as KeyValuePatternProperty).value,
+                                        id: this.options.transformToDefaultImport !== false ?
+                                            (properties[i] as KeyValuePatternProperty).value
+                                            : {
+                                                ...declaration.id,
+                                                properties: [
+                                                    properties[i]
+                                                ]
+                                            },
                                         init: {
                                             ...declaration.init,
                                             arguments: [{
@@ -128,10 +136,10 @@ export default class UILibImporter extends Visitor {
                     const componentPath = this.generateComponentPath(specifier.imported.value)
                     this.importItems.push({
                         ...n,
-                        specifiers: [{
+                        specifiers: this.options.transformToDefaultImport !== false ? [{
                             ...specifier,
                             type: 'ImportDefaultSpecifier',
-                        }],
+                        }] : [specifier],
                         source: {
                             ...n.source,
                             value: componentPath
