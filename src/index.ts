@@ -1,4 +1,4 @@
-import { Identifier, ImportDeclaration, KeyValuePatternProperty, Module, Script, Statement, VariableDeclaration } from "@swc/core"
+import { Identifier, ImportDeclaration, KeyValuePatternProperty, Module, ModuleItem, Statement, VariableDeclaration } from "@swc/core"
 import Visitor from "@swc/core/Visitor"
 
 
@@ -15,6 +15,11 @@ type Options = {
     transformToDefaultImport?: boolean
 }
 
+const defaultOptions = {
+    style: true,
+    camel2DashComponentName: true,
+}
+
 const isEmptyImportDecl = (importDecl: ImportDeclaration) => !importDecl.specifiers.length
 
 export default class UILibImporter extends Visitor {
@@ -22,7 +27,7 @@ export default class UILibImporter extends Visitor {
     importItems: ImportDeclaration[] = []
     constructor(options: Options) {
         super()
-        this.options = options
+        this.options = {...defaultOptions,  ...options}
     }
 
     visitModule(m: Module) {
@@ -43,7 +48,7 @@ export default class UILibImporter extends Visitor {
 
     visitStatements(stmts: Statement[]) {
         stmts = super.visitStatements(stmts)
-        for (let i = stmts.length - 1; i >= 0; i++) {
+        for (let i = stmts.length - 1; i >= 0; i--) {
             const newStatements = this._visitStatement(stmts[i])
             if (!(newStatements.length === 1 && newStatements[0] === stmts[i])) {
                 stmts.splice(i, 1, ...newStatements)
@@ -67,15 +72,17 @@ export default class UILibImporter extends Visitor {
                         declaration.id.type === 'ObjectPattern'
                     ) {
                         const properties = declaration.id.properties
-                        for (let i = properties.length - 1; i >= 0; i++) {
-                            if (properties[i].type === 'KeyValuePatternProperty') {
-                                const key = (properties[i] as KeyValuePatternProperty).key as Identifier
+                        for (let i = properties.length - 1; i >= 0; i--) {
+                            const property = properties[i]
+                            if ((property.type === 'KeyValuePatternProperty' && property.key.type === 'Identifier') || property.type === 'AssignmentPatternProperty') {
+                                const key = property.type === 'KeyValuePatternProperty' ? property.key as Identifier : property.key
+                                const value = property.type === 'KeyValuePatternProperty' ? property.value : property.key
                                 ret.push({
                                     ...s,
                                     declarations: [{
                                         ...declaration,
                                         id: this.options.transformToDefaultImport !== false ?
-                                            (properties[i] as KeyValuePatternProperty).value
+                                            value
                                             : {
                                                 ...declaration.id,
                                                 properties: [
@@ -121,7 +128,7 @@ export default class UILibImporter extends Visitor {
                 }
             }
             if (!s.declarations.length) {
-                ret.unshift()
+                ret.shift()
             }
 
         }
@@ -132,8 +139,9 @@ export default class UILibImporter extends Visitor {
         if (n.source.value === this.options.libraryName) {
             for (let i = n.specifiers.length - 1; i >= 0; i--) {
                 const specifier = n.specifiers[i]
-                if (specifier.type === 'ImportSpecifier' && specifier.imported?.value) {
-                    const componentPath = this.generateComponentPath(specifier.imported.value)
+                if (specifier.type === 'ImportSpecifier') {
+                    const imported = specifier.imported || specifier.local
+                    const componentPath = this.generateComponentPath(imported.value)
                     this.importItems.push({
                         ...n,
                         specifiers: this.options.transformToDefaultImport !== false ? [{
@@ -146,7 +154,7 @@ export default class UILibImporter extends Visitor {
                         }
                     })
                     if (this.options.style || this.options.styleLibraryDirectory) {
-                        const stylePath = this.generateStyleSource(specifier.imported.value)
+                        const stylePath = this.generateStyleSource(imported.value)
                         if (stylePath) {
                             this.importItems.push({
                                 type: 'ImportDeclaration',
