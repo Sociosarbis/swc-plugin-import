@@ -25,17 +25,12 @@ test('transform with styleLibraryDirectory', () => {
 })
 
 test('script transform', () => {
-    const pr = parseSync("const { MessageBox, Slider, Loading } = require('element-ui')", {
-        syntax: 'ecmascript',
-        isModule: false
-    })
-    // todo: fix transformSync plugin callback parameter type 
     const { code } = transformSync("const { MessageBox, Slider, Loading } = require('element-ui')", {
         isModule: false,
         plugin: (p) => {
            return  new UILibImporter({
             libraryName: 'element-ui'
-        }).visitProgram(pr)
+        }).visitProgram(p)
     }
     })
     expect(code).toEqual(readFileSync(join(FIXTURE_BASE_DIR, 'script_transform.js'), 'utf-8'))
