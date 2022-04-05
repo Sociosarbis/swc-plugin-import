@@ -1,0 +1,13 @@
+{
+    "name": "swc-plugin-import-rs",
+    "version": "0.1.0",
+    "description": "",
+    "author": "",
+    "license": "ISC",
+    "keywords": ["swc-plugin"],
+    "main": "target/wasm32-unknown-unknown/release/swc-plugin-import-rs.wasm",
+    "scripts": {
+        "prepublishOnly": "cargo build --release"
+    },
+    "files": []
+}
