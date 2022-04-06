@@ -1,6 +1,6 @@
+use regex::{Captures, Regex};
 use serde::Deserialize;
 use swc_plugin::{ast::*, plugin_transform, TransformPluginProgramMetadata};
-
 #[derive(Deserialize)]
 struct CustomName {
     format: String,
@@ -15,7 +15,6 @@ struct CustomStylePath {
 #[serde(untagged)]
 enum CustomNameOption {
     String(String),
-    Format(CustomName),
 }
 
 #[derive(Deserialize)]
@@ -23,7 +22,6 @@ enum CustomNameOption {
 enum StyleOption {
     Bool(bool),
     CSS,
-    Format(CustomStylePath),
 }
 
 impl Default for StyleOption {
@@ -42,7 +40,7 @@ struct Options {
     style_library_directory: Option<String>,
     #[serde(default = "default_camel_2_dash_component_name")]
     camel_2_dash_component_name: bool,
-    #[serde(default)]
+    #[serde(default = "default_transform_to_default_import")]
     transform_to_default_import: bool,
     #[serde(default)]
     style: StyleOption,
@@ -56,9 +54,45 @@ fn default_camel_2_dash_component_name() -> bool {
     true
 }
 
+fn default_transform_to_default_import() -> bool {
+    true
+}
+
+fn is_double_quote(s: &str) -> bool {
+    s.chars().next().unwrap() == '"'
+}
+
 pub struct TransformVisitor {
     options: Options,
     import_items: Vec<ImportDecl>,
+}
+
+impl TransformVisitor {
+    fn generate_component_path<'a>(&self, source: &'a str) -> String {
+        if let Some(custom_name) = &self.options.custom_name {
+            match custom_name {
+                CustomNameOption::String(s) => return self.generate_component_name(s).to_string(),
+            }
+        }
+        format!(
+            "{}/{}/{}",
+            self.options.library_name,
+            self.options.library_directory,
+            self.generate_component_name(source)
+        )
+    }
+
+    fn generate_component_name<'a>(&self, source: &'a str) -> &'a str {
+        if self.options.camel_2_dash_component_name {
+            let re1 = Regex::new(r"^(?<=[a-z])([A-Z])").unwrap();
+            let re2 = Regex::new(r"^[A-Z]").unwrap();
+            re2.replace_all(
+                &re1.replace_all(source, |caps: &Captures| format!("-{}", &caps[0])),
+                |caps: &Captures| caps[0].to_lowercase(),
+            );
+        }
+        return source;
+    }
 }
 
 impl VisitMut for TransformVisitor {
@@ -89,11 +123,27 @@ impl VisitMut for TransformVisitor {
         if n.src.value == self.options.library_name {
             for i in (0..n.specifiers.len()).rev() {
                 if let Some(specifier) = n.specifiers[i].as_named() {
-                    let imported = if let Some(ModuleExportName::Ident(ref name)) = specifier.imported {
-                        name.sym.clone()
+                    let imported =
+                        if let Some(ModuleExportName::Ident(ref name)) = specifier.imported {
+                            name.sym.clone()
+                        } else {
+                            specifier.local.sym.clone()
+                        };
+                    let component_path = self.generate_component_path(&imported);
+                    let quote_mark = if is_double_quote(&component_path) { '"' } else { '\'' };
+                    let mut new_import_item = n.clone();
+                    new_import_item.specifiers = if self.options.transform_to_default_import {
+                        vec![ImportSpecifier::Default(ImportDefaultSpecifier {
+                            span: specifier.span,
+                            local: specifier.local.clone()
+                        })]
                     } else {
-                        specifier.local.sym.clone()
+                        vec![ImportSpecifier::Named(specifier.clone())]
                     };
+                    new_import_item.src.value = component_path.clone().into();
+                    if let Some(_) = new_import_item.src.raw {
+                        new_import_item.src.raw = Some(format!("{}{}{}", quote_mark, component_path, quote_mark).into());
+                    }
                 }
             }
         }
