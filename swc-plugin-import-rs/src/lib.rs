@@ -1,15 +1,6 @@
 use regex::{Captures, Regex};
 use serde::Deserialize;
 use swc_plugin::{ast::*, plugin_transform, TransformPluginProgramMetadata};
-#[derive(Deserialize)]
-struct CustomName {
-    format: String,
-}
-
-#[derive(Deserialize)]
-struct CustomStylePath {
-    format: String,
-}
 
 #[derive(Deserialize)]
 #[serde(untagged)]
@@ -17,7 +8,7 @@ enum CustomNameOption {
     String(String),
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, PartialEq)]
 #[serde(untagged)]
 enum StyleOption {
     Bool(bool),
@@ -93,6 +84,73 @@ impl TransformVisitor {
         }
         return source;
     }
+
+    fn generate_style_source<'a>(&self, source: &'a str) -> String {
+        if let Some(style_library_directory) = &self.options.style_library_directory {
+            format!(
+                "{}/{}/{}",
+                self.options.library_name,
+                style_library_directory,
+                self.generate_component_name(source)
+            )
+        } else {
+            let s = if let StyleOption::Bool(true) = self.options.style {
+                "style"
+            } else {
+                "style/css"
+            };
+            format!("{}/{}", self.generate_component_path(source), s)
+        }
+    }
+
+    fn _visit_mut_stat(&mut self, s: &mut Stmt) -> Vec<Stmt> {
+        let ret = vec![];
+        if let Stmt::Decl(Decl::Var(decl)) = s {
+            for i in (0..decl.decls.len()).rev() {
+                let declaration = &decl.decls[i];
+                if let Some(ptr) = &declaration.init {
+                    if let Some(expr) = ptr.as_call() {
+                        if let Callee::Expr(callee) = &expr.callee {
+                            if let Some(v) = callee.as_ident() {
+                                if &v.sym == "require" {
+                                    if !expr.args.is_empty() {
+                                        if let Some(lit) = expr.args[0].expr.as_lit() {
+                                            if let Lit::Str(v) = lit {
+                                                if v.value == self.options.library_name {
+                                                    if let Pat::Object(obj_pat) = &declaration.name {
+                                                        let properties = &obj_pat.props;
+                                                        for i in (0..properties.len()).rev() {
+                                                            let property = &properties[i];
+                                                            let mut value: Option<Pat>;
+                                                            let mut key: Option<Ident>;
+                                                            if let ObjectPatProp::KeyValue(kv) = property {
+                                                                if let PropName::Ident(ident) = &kv.key {
+                                                                    key = Some(ident.clone());
+                                                                    value = Some(*kv.value.clone());
+                                                                }
+                    
+                                                            } else if let ObjectPatProp::Assign(assign) = property {
+                                                                key = Some(assign.key.clone());
+                                                                value = Some(Pat::Ident(BindingIdent {
+                                                                    id: assign.key.clone(),
+                                                                    type_ann: None 
+                                                                }));
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ret
+    }
 }
 
 impl VisitMut for TransformVisitor {
@@ -130,22 +188,53 @@ impl VisitMut for TransformVisitor {
                             specifier.local.sym.clone()
                         };
                     let component_path = self.generate_component_path(&imported);
-                    let quote_mark = if is_double_quote(&component_path) { '"' } else { '\'' };
+                    let quote_mark = if is_double_quote(&component_path) {
+                        '"'
+                    } else {
+                        '\''
+                    };
                     let mut new_import_item = n.clone();
                     new_import_item.specifiers = if self.options.transform_to_default_import {
                         vec![ImportSpecifier::Default(ImportDefaultSpecifier {
                             span: specifier.span,
-                            local: specifier.local.clone()
+                            local: specifier.local.clone(),
                         })]
                     } else {
                         vec![ImportSpecifier::Named(specifier.clone())]
                     };
                     new_import_item.src.value = component_path.clone().into();
                     if let Some(_) = new_import_item.src.raw {
-                        new_import_item.src.raw = Some(format!("{}{}{}", quote_mark, component_path, quote_mark).into());
+                        new_import_item.src.raw =
+                            Some(format!("{}{}{}", quote_mark, component_path, quote_mark).into());
                     }
+
+                    if self.options.style != StyleOption::Bool(false)
+                        || self.options.style_library_directory.is_some()
+                    {
+                        let style_path = self.generate_style_source(&imported);
+                        self.import_items.push(ImportDecl {
+                            span: specifier.span,
+                            specifiers: vec![],
+                            type_only: false,
+                            asserts: None,
+                            src: Str {
+                                span: n.src.span,
+                                value: style_path.clone().into(),
+                                raw: Some(
+                                    format!("{}{}{}", quote_mark, style_path, quote_mark).into(),
+                                ),
+                            },
+                        });
+                    }
+                    n.specifiers.remove(i);
                 }
             }
+        }
+    }
+
+    fn visit_mut_stmts(&mut self, stmts: &mut Vec<Stmt>) {
+        for i in (0..stmts.len()).rev() {
+
         }
     }
 }
