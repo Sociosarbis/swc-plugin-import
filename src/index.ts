@@ -42,42 +42,43 @@ const isDoubleQuote = (s?: string) => s && s[0] === '"'
 export default class UILibImporter extends Visitor {
   options: Options
   importItems: ImportDeclaration[] = []
+  requireStmts: Statement[] = []
   constructor(options: Options) {
     super()
     this.options = { ...defaultOptions, ...options }
   }
 
   visitModule(m: Module) {
-    m = super.visitModule(m)
     for (let i = m.body.length - 1; i >= 0; i--) {
       const item = m.body[i]
       if (item.type === 'ImportDeclaration') {
-        const importDecl = item as ImportDeclaration
+        const importDecl = this.visitImportDeclaration(item)
         if (
           importDecl.source.value === this.options.libraryName &&
           isEmptyImportDecl(importDecl)
         ) {
           m.body.splice(i, 1)
         }
+        m.body.splice(i, 0, ...this.importItems)
+        this.importItems.length = 0
       }
     }
-    m.body.unshift(...this.importItems)
     return m
   }
 
   visitStatements(stmts: Statement[]) {
-    stmts = super.visitStatements(stmts)
     for (let i = stmts.length - 1; i >= 0; i--) {
-      const newStatements = this._visitStatement(stmts[i])
-      if (!(newStatements.length === 1 && newStatements[0] === stmts[i])) {
-        stmts.splice(i, 1, ...newStatements)
+      const stmt = this.visitStatement(stmts[i])
+      if (stmt.type === 'EmptyStatement') {
+        stmts.splice(i, 1)
       }
+      stmts.splice(i, 0, ...this.requireStmts)
+      this.requireStmts.length = 0
     }
     return stmts
   }
 
-  _visitStatement(s: Statement) {
-    const ret: Statement[] = [s]
+  visitStatement(s: Statement) {
     if (s.type === 'VariableDeclaration') {
       for (let i = s.declarations.length - 1; i >= 0; i--) {
         const declaration = s.declarations[i]
@@ -114,7 +115,7 @@ export default class UILibImporter extends Visitor {
                 )
                   ? '"'
                   : "'"
-                ret.push({
+                this.requireStmts.push({
                   ...s,
                   declarations: [
                     {
@@ -144,7 +145,7 @@ export default class UILibImporter extends Visitor {
                 if (this.options.style || this.options.styleLibraryDirectory) {
                   const stylePath = this.generateStyleSource(key.value)
                   if (stylePath) {
-                    ret.push({
+                    this.requireStmts.push({
                       type: 'ExpressionStatement',
                       span: declaration.span,
                       expression: {
@@ -172,10 +173,10 @@ export default class UILibImporter extends Visitor {
         }
       }
       if (!s.declarations.length) {
-        ret.shift()
+        (s as Statement).type = 'EmptyStatement'
       }
     }
-    return ret
+    return s
   }
 
   visitImportDeclaration(n: ImportDeclaration) {
@@ -223,7 +224,7 @@ export default class UILibImporter extends Visitor {
       }
       return n
     }
-    return super.visitImportDeclaration(n)
+    return n
   }
 
   generateComponentPath(source: string) {

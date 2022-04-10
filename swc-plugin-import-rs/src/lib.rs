@@ -60,6 +60,7 @@ fn wrap_str(s: &str, wrap_char: char) -> String {
 pub struct TransformVisitor {
     options: Options,
     import_items: Vec<ImportDecl>,
+    require_stmts: Vec<Stmt>
 }
 
 impl TransformVisitor {
@@ -111,9 +112,93 @@ impl TransformVisitor {
         return self.options.style != StyleOption::Bool(false)
             || self.options.style_library_directory.is_some();
     }
+}
 
-    fn _visit_mut_stat(&mut self, s: &mut Stmt) -> Vec<Stmt> {
-        let mut ret = vec![];
+impl VisitMut for TransformVisitor {
+    // Implement necessary visit_mut_* methods for actual custom transform.
+    // A comprehensive list of possible visitor methods can be found here:
+    // https://rustdoc.swc.rs/swc_ecma_visit/trait.VisitMut.html
+    fn visit_mut_module(&mut self, m: &mut Module) {
+        for i in (0..m.body.len()).rev() {
+            if let ModuleItem::ModuleDecl(ModuleDecl::Import(import_decl)) = &mut m.body[i] {
+                import_decl.visit_mut_with(self);
+                if import_decl.src.value == self.options.library_name
+                    && import_decl.specifiers.is_empty()
+                {
+                    m.body.remove(i);
+                }
+                m.body.splice(
+                    i..i,
+                    self.import_items
+                        .drain(..)
+                        .map(|item| ModuleItem::ModuleDecl(ModuleDecl::Import(item))),
+                );
+            }
+        }
+    }
+
+    fn visit_mut_import_decl(&mut self, n: &mut ImportDecl) {
+        if n.src.value == self.options.library_name {
+            for i in (0..n.specifiers.len()).rev() {
+                if let ImportSpecifier::Named(specifier) = &n.specifiers[i] {
+                    let imported =
+                        if let Some(ModuleExportName::Ident(ref name)) = specifier.imported {
+                            name.sym.clone()
+                        } else {
+                            specifier.local.sym.clone()
+                        };
+                    let component_path = self.generate_component_path(&imported);
+                    let quote_mark = if is_double_quote(&component_path) {
+                        '"'
+                    } else {
+                        '\''
+                    };
+                    let mut new_import_item = n.clone();
+                    new_import_item.specifiers = if self.options.transform_to_default_import {
+                        vec![ImportSpecifier::Default(ImportDefaultSpecifier {
+                            span: specifier.span,
+                            local: specifier.local.clone(),
+                        })]
+                    } else {
+                        vec![ImportSpecifier::Named(specifier.clone())]
+                    };
+                    new_import_item.src.value = component_path.clone().into();
+                    if let Some(_) = new_import_item.src.raw {
+                        new_import_item.src.raw =
+                            Some(wrap_str(&component_path, quote_mark).into());
+                    }
+
+                    if self.should_import_style() {
+                        let style_path = self.generate_style_source(&imported);
+                        self.import_items.push(ImportDecl {
+                            span: specifier.span,
+                            specifiers: vec![],
+                            type_only: false,
+                            asserts: None,
+                            src: Str {
+                                span: n.src.span,
+                                value: style_path.clone().into(),
+                                raw: Some(wrap_str(&style_path, quote_mark).into()),
+                            },
+                        });
+                    }
+                    n.specifiers.remove(i);
+                }
+            }
+        }
+    }
+
+    fn visit_mut_stmts(&mut self, stmts: &mut Vec<Stmt>) {
+        for i in (0..stmts.len()).rev() {
+            stmts[i].visit_mut_with(self);
+            if let Stmt::Empty(_) = &stmts[i] {
+                stmts.remove(i);
+            }
+            stmts.splice(i..i, self.require_stmts.drain(..));
+        }
+    }
+
+    fn visit_mut_stmt(&mut self, s: &mut Stmt) {
         if let Stmt::Decl(Decl::Var(decl)) = s {
             for i in (0..decl.decls.len()).rev() {
                 let declaration = &mut decl.decls[i];
@@ -212,14 +297,13 @@ impl TransformVisitor {
                                                                     Box::new(Expr::Call(new_init)),
                                                                 );
                                                             }
-                                                            ret.push(Stmt::Decl(Decl::Var(
+                                                            self.require_stmts.push(Stmt::Decl(Decl::Var(
                                                                 new_decl,
                                                             )));
                                                             if self.should_import_style() {
                                                                 let style_path = self
                                                                     .generate_style_source(&k.sym);
-
-                                                                ret.push(Stmt::Expr(ExprStmt {
+                                                                self.require_stmts.push(Stmt::Expr(ExprStmt {
                                                                     span: decl.span,
                                                                     expr: Box::new(Expr::Call(CallExpr {
                                                                         span: expr.span,
@@ -256,100 +340,7 @@ impl TransformVisitor {
                 }
             }
             if decl.decls.is_empty() {
-                *s = Stmt::Empty(EmptyStmt {
-                    span: decl.span
-                })
-            }
-        }
-        ret
-    }
-}
-
-impl VisitMut for TransformVisitor {
-    // Implement necessary visit_mut_* methods for actual custom transform.
-    // A comprehensive list of possible visitor methods can be found here:
-    // https://rustdoc.swc.rs/swc_ecma_visit/trait.VisitMut.html
-    fn visit_mut_module(&mut self, m: &mut Module) {
-        for i in (0..m.body.len()).rev() {
-            if let Some(decl) = m.body[i].as_module_decl() {
-                if let Some(import_decl) = decl.as_import() {
-                    if import_decl.src.value == self.options.library_name
-                        && import_decl.specifiers.is_empty()
-                    {
-                        m.body.remove(i);
-                    }
-                }
-            }
-        }
-        m.body = self
-            .import_items
-            .iter()
-            .map(|item| ModuleItem::ModuleDecl(ModuleDecl::Import(item.clone())))
-            .chain(m.body.drain(..))
-            .collect();
-    }
-
-    fn visit_mut_import_decl(&mut self, n: &mut ImportDecl) {
-        if n.src.value == self.options.library_name {
-            for i in (0..n.specifiers.len()).rev() {
-                if let ImportSpecifier::Named(specifier) = &n.specifiers[i] {
-                    let imported =
-                        if let Some(ModuleExportName::Ident(ref name)) = specifier.imported {
-                            name.sym.clone()
-                        } else {
-                            specifier.local.sym.clone()
-                        };
-                    let component_path = self.generate_component_path(&imported);
-                    let quote_mark = if is_double_quote(&component_path) {
-                        '"'
-                    } else {
-                        '\''
-                    };
-                    let mut new_import_item = n.clone();
-                    new_import_item.specifiers = if self.options.transform_to_default_import {
-                        vec![ImportSpecifier::Default(ImportDefaultSpecifier {
-                            span: specifier.span,
-                            local: specifier.local.clone(),
-                        })]
-                    } else {
-                        vec![ImportSpecifier::Named(specifier.clone())]
-                    };
-                    new_import_item.src.value = component_path.clone().into();
-                    if let Some(_) = new_import_item.src.raw {
-                        new_import_item.src.raw =
-                            Some(wrap_str(&component_path, quote_mark).into());
-                    }
-
-                    if self.should_import_style() {
-                        let style_path = self.generate_style_source(&imported);
-                        self.import_items.push(ImportDecl {
-                            span: specifier.span,
-                            specifiers: vec![],
-                            type_only: false,
-                            asserts: None,
-                            src: Str {
-                                span: n.src.span,
-                                value: style_path.clone().into(),
-                                raw: Some(wrap_str(&style_path, quote_mark).into()),
-                            },
-                        });
-                    }
-                    n.specifiers.remove(i);
-                }
-            }
-        }
-    }
-
-    fn visit_mut_stmts(&mut self, stmts: &mut Vec<Stmt>) {
-        for i in (0..stmts.len()).rev() {
-            let mut items = self._visit_mut_stat(&mut stmts[i]);
-            if let Stmt::Empty(_) = &stmts[i] {
-                stmts.remove(i);
-            }
-            if i < stmts.len() {
-                stmts.splice(i..i, items);
-            } else {
-                stmts.append(&mut items);
+                *s = Stmt::Empty(EmptyStmt { span: decl.span })
             }
         }
     }
@@ -383,6 +374,7 @@ pub fn process_transform(program: Program, _metadata: TransformPluginProgramMeta
     };
     program.fold_with(&mut as_folder(TransformVisitor {
         import_items: vec![],
+        require_stmts: vec![],
         options: options,
     }))
 }
